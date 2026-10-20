@@ -58,6 +58,15 @@ jobs:
             --iconBackgroundColor "#0f172a" --iconBackgroundColorDark "#0f172a" \
             --splashBackgroundColor "#0f172a" --splashBackgroundColorDark "#0f172a"
 
+      - name: إصلاحُ خلفيّة الأيقونة
+        run: |
+          RES=android/app/src/main/res
+          mkdir -p "$RES/values"
+          printf '<?xml version="1.0" encoding="utf-8"?>\n<resources>\n    <color name="ic_launcher_background">#0f172a</color>\n</resources>\n' > "$RES/values/ic_launcher_background.xml"
+          if [ -d "$RES/mipmap-anydpi-v26" ]; then
+            sed -i 's#@mipmap/ic_launcher_background#@color/ic_launcher_background#g' "$RES"/mipmap-anydpi-v26/*.xml
+          fi
+
       - name: مزامنة
         run: npx cap sync android
 
