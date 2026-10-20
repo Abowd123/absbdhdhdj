@@ -1,0 +1,116 @@
+# ═══ بناءُ APK لأندرويد على GitHub ═══
+# كلُّ دفعٍ إلى main (أو تشغيلٌ يدويّ من تبويب Actions) يبني APK ويضعه:
+#   · في Artifacts للتشغيل نفسه
+#   · وفي صفحة Releases باسم «CivilDraft vX.Y.Z (build N)» للتحميل المباشر
+# التوقيع: إن أُضيفت أسرارُ المستودع الأربعة (انظر docs/ANDROID.md) يُبنى
+# APK إصدارٍ موقَّعٌ ثابت. وإلّا يُبنى APK تجريبيّ (debug) يُثبَّت مباشرةً.
+name: Android APK
+
+on:
+  push:
+    branches: [main, master]
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - uses: android-actions/setup-android@v3
+
+      - name: تثبيتُ Capacitor
+        run: npm install --no-audit --no-fund
+
+      - name: بناءُ www/
+        run: node scripts/build-android.js
+
+      - name: توليدُ مشروع أندرويد
+        run: |
+          rm -rf android
+          npx cap add android
+          node scripts/android-patch.js ${{ github.run_number }}
+
+      - name: الأيقوناتُ وشاشةُ البداية
+        continue-on-error: true
+        run: |
+          mkdir -p assets
+          cp icons/icon-maskable-512.png assets/icon-only.png
+          cp icons/icon-maskable-512.png assets/icon-foreground.png
+          cp icons/icon-512.png assets/splash.png
+          cp icons/icon-512.png assets/splash-dark.png
+          npx @capacitor/assets generate --android \
+            --iconBackgroundColor "#0f172a" --iconBackgroundColorDark "#0f172a" \
+            --splashBackgroundColor "#0f172a" --splashBackgroundColorDark "#0f172a"
+
+      - name: مزامنة
+        run: npx cap sync android
+
+      - name: هل التوقيعُ متاح؟
+        id: sign
+        env:
+          KS: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+        run: |
+          if [ -n "$KS" ]; then echo "on=1" >> "$GITHUB_OUTPUT"; else echo "on=0" >> "$GITHUB_OUTPUT"; fi
+
+      - name: بناءُ APK تجريبيّ (بلا توقيع خاص)
+        if: steps.sign.outputs.on == '0'
+        working-directory: android
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleDebug --no-daemon
+          mkdir -p ../out
+          cp app/build/outputs/apk/debug/app-debug.apk ../out/CivilDraft-${{ github.run_number }}.apk
+
+      - name: بناءُ APK إصدارٍ موقَّع
+        if: steps.sign.outputs.on == '1'
+        working-directory: android
+        env:
+          KS: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          KS_PASS: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          KEY_PASS: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          chmod +x gradlew
+          echo "$KS" | base64 -d > "$RUNNER_TEMP/release.jks"
+          ./gradlew assembleRelease bundleRelease --no-daemon \
+            -Pandroid.injected.signing.store.file="$RUNNER_TEMP/release.jks" \
+            -Pandroid.injected.signing.store.password="$KS_PASS" \
+            -Pandroid.injected.signing.key.alias="$KEY_ALIAS" \
+            -Pandroid.injected.signing.key.password="$KEY_PASS"
+          mkdir -p ../out
+          cp app/build/outputs/apk/release/app-release.apk ../out/CivilDraft-${{ github.run_number }}.apk
+          cp app/build/outputs/bundle/release/app-release.aab ../out/CivilDraft-${{ github.run_number }}.aab
+
+      - name: الإصدار
+        id: ver
+        run: echo "v=$(node -p "require('./package.json').version")" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: CivilDraft-apk-${{ github.run_number }}
+          path: out/*
+
+      - name: نشرٌ في Releases
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || format('v{0}-build{1}', steps.ver.outputs.v, github.run_number) }}
+          name: CivilDraft v${{ steps.ver.outputs.v }} (build ${{ github.run_number }})
+          prerelease: ${{ steps.sign.outputs.on == '0' }}
+          body: |
+            حمّل ملفَّ **CivilDraft-${{ github.run_number }}.apk** على هاتفك وثبّته
+            (اسمح بالتثبيت من مصادرَ غير معروفة إن طُلب).
+          files: out/*
